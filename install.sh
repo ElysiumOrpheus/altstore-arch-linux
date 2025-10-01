@@ -34,7 +34,6 @@ info "Installing required packages from official repositories..."
 sudo pacman -S --needed --noconfirm \
   avahi \
   usbmuxd \
-  libplist \
   libimobiledevice \
   libimobiledevice-glue \
   gtk3 \
@@ -50,7 +49,7 @@ if ! command -v yay &> /dev/null; then
     exit 1
 fi
 info "Installing 'libtatsu-git' from the AUR..."
-yay -S --needed --noconfirm libtatsu-git
+yay -S --needed --noconfirm libplist-git libtatsu-git
 
 # rust config
 info "Setting up Rust default toolchain..."

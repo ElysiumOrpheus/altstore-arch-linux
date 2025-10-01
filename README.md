@@ -31,11 +31,15 @@ ive looked at so many reddit forums, the aur and githubs trying to install altst
 
 1.  **Clone this project:**
     ```sh
-    git clone https://github.com/your-username/altserver-arch-linux.git
+    git clone https://github.com/elysiumorpheus/altserver-arch-linux.git
     cd altserver-arch-linux
     ```
 
 2.  **Run the install script:**
+    ```sh
+    chmod +x install.sh
+    ```
+
     ```sh
     ./install.sh
     ```
