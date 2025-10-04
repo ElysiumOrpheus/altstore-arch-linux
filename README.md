@@ -50,7 +50,7 @@ ive looked at so many reddit forums, the aur and githubs trying to install altst
 
 ## Configuration
 
-The server is running, but it doesn't know about your devices yet. Let's make the introduction.
+The server is running, but it doesn't know about your devices yet.
 
 **1. Pair your iPhone or iPad**
    - Connect your device to your computer with a USB cable.
@@ -86,10 +86,13 @@ The altstore icon should be on your homescreen. You will need to head to VPN & D
 
 - **Check if the services are running:**
   ```sh
-  # Check the background daemons we set up
-  systemctl --user status altserver.service netmuxd.service
+  # User service (AltServer)
+  systemctl --user status altserver.service
 
-  # Check the system-wide services
+  # System service (netmuxd)
+  systemctl status netmuxd.service
+
+  # System-wide dependencies
   systemctl status docker.service avahi-daemon.service
   ```
   Look for the `active (running)` status in green.
@@ -103,11 +106,11 @@ The altstore icon should be on your homescreen. You will need to head to VPN & D
 - **Look at the logs:**
   If a service is failing, the logs will tell you why.
   ```sh
-  # See the AltServer logs in real-time
+  # See the AltServer logs in real-time (user)
   journalctl --user -u altserver.service -f
 
-  # See the netmuxd logs
-  journalctl --user -u netmuxd.service -f
+  # See the netmuxd logs (system)
+  journalctl -u netmuxd.service -f
   ```
 
 ## The Manual Way
@@ -137,24 +140,34 @@ Here's a breakdown of what the `install.sh` script does
     ```sh
     sudo systemctl enable --now avahi-daemon.service usbmuxd.service docker.service
     ```
-5.  **Setup User Services:**
-    Create the file `~/.config/systemd/user/netmuxd.service`:
+    Create the file `/etc/systemd/system/netmuxd.service`:
     ```ini
     [Unit]
-    Description=netmuxd for AltServer
+    Description=netmuxd (network usbmuxd bridge)
     After=network-online.target
+    Wants=network-online.target
 
     [Service]
+    Type=simple
     ExecStart=/opt/altserver/netmuxd
+    Restart=on-failure
+    RestartSec=2
 
     [Install]
-    WantedBy=default.target
+    WantedBy=multi-user.target
     ```
+    Then enable it:
+    ```sh
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now netmuxd.service
+    ```
+
+5.  **Setup User Service (AltServer):**
     Create `~/.config/systemd/user/altserver.service`:
     ```ini
     [Unit]
     Description=AltServer Daemon
-    After=network-online.target netmuxd.service
+    After=network-online.target
 
     [Service]
     Environment="ALTSERVER_ANISETTE_SERVER=http://127.0.0.1:6969"
@@ -163,10 +176,10 @@ Here's a breakdown of what the `install.sh` script does
     [Install]
     WantedBy=default.target
     ```
-    Then enable them:
+    Then enable it:
     ```sh
     systemctl --user daemon-reload
-    systemctl --user enable --now netmuxd.service altserver.service
+    systemctl --user enable --now altserver.service
     ```
 6.  **Setup Docker & Anisette:**
     ```sh

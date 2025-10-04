@@ -215,12 +215,41 @@ sudo systemctl enable --now avahi-daemon.service
 sudo systemctl enable --now usbmuxd.service
 sudo systemctl enable --now docker.service
 
-info "Setting up user-level services (netmuxd, altserver)..."
+info "Configuring netmuxd as a system service (root)..."
+# Stop/disable any user-scoped netmuxd that might have been set up previously
+systemctl --user stop netmuxd.service >/dev/null 2>&1 || true
+systemctl --user disable netmuxd.service >/dev/null 2>&1 || true
+rm -f ~/.config/systemd/user/netmuxd.service 2>/dev/null || true
+
+# Write system unit for netmuxd
+sudo tee /etc/systemd/system/netmuxd.service >/dev/null <<'EOF'
+[Unit]
+Description=netmuxd (network usbmuxd bridge)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/altserver/netmuxd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now netmuxd.service
+
+# Configure AltServer as a user service
+info "Setting up user-level AltServer service..."
 mkdir -p ~/.config/systemd/user/
-cp ./systemd/netmuxd.service ~/.config/systemd/user/
 cp ./systemd/altserver.service ~/.config/systemd/user/
+
+# Ensure the user unit does not depend on a user-scoped netmuxd
+sed -i 's/^After=network-online.target netmuxd.service$/After=network-online.target/' ~/.config/systemd/user/altserver.service || true
+
 systemctl --user daemon-reload
-systemctl --user enable --now netmuxd.service
 systemctl --user enable --now altserver.service
 
 # Docker and anisette server setup
@@ -256,6 +285,7 @@ warning "=================================================================="
 info "After logging back in, follow the 'Post-Installation' steps in the README to pair your device and install AltStore."
 info ""
 info "Quick verification commands you can run after reboot:"
-info "  systemctl --user status altserver.service netmuxd.service"
+info "  systemctl --user status altserver.service"
+info "  systemctl status netmuxd.service"
 info "  docker ps | grep anisette"
 info "  groups | grep docker"
