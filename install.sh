@@ -37,7 +37,7 @@ is_package_installed() {
 
 # Function to check if an AUR package is available
 is_aur_package_available() {
-    yay -Si "$1" &>/dev/null 2>&1
+    "$AUR_HELPER" -Si "$1" &>/dev/null 2>&1
 }
 
 # Function to remove conflicting packages safely (only if actually installed)
@@ -62,6 +62,15 @@ remove_conflicting_package() {
     fi
 }
 
+# Remove an exact name from OFFICIAL_PACKAGES (pattern replace would also mangle e.g. libimobiledevice-glue)
+drop_official() {
+    local keep=() p
+    for p in "${OFFICIAL_PACKAGES[@]}"; do
+        [[ "$p" != "$1" ]] && keep+=("$p")
+    done
+    OFFICIAL_PACKAGES=("${keep[@]}")
+}
+
 # Function to detect and resolve package conflicts
 resolve_package_conflicts() {
     info "Scanning for potential package conflicts..."
@@ -77,35 +86,37 @@ resolve_package_conflicts() {
     # Check each conflict pair
     for official in "${!conflicts[@]}"; do
         local aur="${conflicts[$official]}"
+
+        # -git variant already installed: the official package would conflict with it
+        if is_package_installed "$aur"; then
+            success "'$aur' already installed, skipping official '$official'"
+            drop_official "$official"
+            continue
+        fi
         
         # Check if AUR version is available and needed by our AUR dependencies
         if is_aur_package_available "$aur"; then
             detect "Checking conflict: $official vs $aur"
             
             # Check if the AUR package is required by libtatsu-git or other AUR deps
-            local aur_deps=$(yay -Si libtatsu-git 2>/dev/null | grep -E "^Depends On" | grep -o "$aur" || echo "")
+            local aur_deps=$("$AUR_HELPER" -Si libtatsu-git 2>/dev/null | grep -E "^Depends On" | grep -o "$aur" || echo "")
             
             if [[ -n "$aur_deps" ]] || [[ "$aur" == "libplist-git" ]]; then
                 detect "AUR package '$aur' is required by AUR dependencies"
                 
-                # Check if AUR version is already installed
-                if is_package_installed "$aur"; then
-                    success "AUR package '$aur' already installed, skipping official version"
-                    # Remove from official install list since AUR version exists
-                    OFFICIAL_PACKAGES=(${OFFICIAL_PACKAGES[@]/$official})
-                elif is_package_installed "$official"; then
+                if is_package_installed "$official"; then
                     # Only remove if official is installed and we need AUR version
                     remove_conflicting_package "$official" "conflicts with required AUR package $aur"
                     # Add to AUR install list
                     AUR_PACKAGES_TO_INSTALL+=("$aur")
                     # Remove from official install list
-                    OFFICIAL_PACKAGES=(${OFFICIAL_PACKAGES[@]/$official})
+                    drop_official "$official"
                 else
                     # Neither is installed, prefer AUR version
                     detect "Neither '$official' nor '$aur' installed, will install AUR version"
                     AUR_PACKAGES_TO_INSTALL+=("$aur")
                     # Remove from official install list
-                    OFFICIAL_PACKAGES=(${OFFICIAL_PACKAGES[@]/$official})
+                    drop_official "$official"
                 fi
             fi
         fi
@@ -116,9 +127,10 @@ resolve_package_conflicts() {
 info "Starting AltServer setup for Arch Linux with conflict detection..."
 
 # Check for AUR helper first
-info "Checking for AUR helper (yay)..."
-if ! command -v yay &> /dev/null; then
-    error "AUR helper 'yay' not found. Please install it first."
+info "Checking for AUR helper (yay or paru)..."
+AUR_HELPER=$(command -v yay || command -v paru)
+if [[ -z "$AUR_HELPER" ]]; then
+    error "No AUR helper found (yay or paru). Please install one first."
     info "You can install it by running: sudo pacman -S --needed git base-devel && git clone https://aur.archlinux.org/yay.git && cd yay && makepkg -si"
     exit 1
 fi
@@ -132,9 +144,11 @@ OFFICIAL_PACKAGES=(
     "libimobiledevice-glue"
     "gtk3"
     "openssl"
-    "rustup"
     "docker"
 )
+
+# rustup conflicts with the 'rust' package; only add it if no Rust is installed
+command -v cargo &>/dev/null || OFFICIAL_PACKAGES+=("rustup")
 
 AUR_PACKAGES_TO_INSTALL=(
     "libtatsu-git"
@@ -163,7 +177,7 @@ if [ ${#AUR_PACKAGES_TO_INSTALL[@]} -gt 0 ]; then
     # Remove duplicates from AUR packages list
     AUR_PACKAGES_TO_INSTALL=($(printf "%s\n" "${AUR_PACKAGES_TO_INSTALL[@]}" | sort -u))
     
-    yay -S --needed --noconfirm "${AUR_PACKAGES_TO_INSTALL[@]}"
+    "$AUR_HELPER" -S --needed --noconfirm "${AUR_PACKAGES_TO_INSTALL[@]}"
 else
     warning "No AUR packages to install"
 fi
@@ -193,18 +207,24 @@ if ! is_package_installed "libtatsu-git"; then
 fi
 
 # Rust config
-info "Setting up Rust default toolchain..."
-rustup toolchain install stable
-rustup default stable
+if command -v rustup &>/dev/null; then
+    info "Setting up Rust default toolchain..."
+    rustup toolchain install stable
+    rustup default stable
+else
+    info "Using system Rust ($(rustc --version)), skipping rustup setup"
+fi
 
 # Download and place binaries
 info "Creating /opt/altserver and downloading binaries..."
 sudo mkdir -p /opt/altserver
 cd /opt/altserver
 info "Downloading AltServer binary..."
-sudo wget https://github.com/NyaMisty/AltServer-Linux/releases/download/v0.0.5/AltServer-x86_64 -O AltServer
+sudo wget https://github.com/NyaMisty/AltServer-Linux/releases/download/v0.0.5/AltServer-x86_64 -O AltServer.part
+sudo mv AltServer.part AltServer
 info "Downloading netmuxd binary..."
-sudo wget https://github.com/jkcoxson/netmuxd/releases/download/v0.1.4/x86_64-linux-netmuxd -O netmuxd
+sudo wget https://github.com/jkcoxson/netmuxd/releases/download/v0.1.4/x86_64-linux-netmuxd -O netmuxd.part
+sudo mv netmuxd.part netmuxd
 info "Making binaries executable..."
 sudo chmod +x AltServer netmuxd
 cd - > /dev/null 
@@ -254,17 +274,17 @@ systemctl --user enable --now altserver.service
 
 # Docker and anisette server setup
 info "Adding current user ($USER) to the 'docker' group..."
-sudo usermod -aG docker $USER
+sudo usermod -aG docker "$USER"  # takes effect on next login, so docker calls below use sudo
 
 info "Checking if Anisette container already exists..."
-if docker ps -a --format "table {{.Names}}" | grep -q "anisette-v3"; then
+if sudo docker ps -a --format "table {{.Names}}" | grep -q "anisette-v3"; then
     warning "Anisette container already exists. Removing old container..."
-    docker stop anisette-v3 2>/dev/null || true
-    docker rm anisette-v3 2>/dev/null || true
+    sudo docker stop anisette-v3 2>/dev/null || true
+    sudo docker rm anisette-v3 2>/dev/null || true
 fi
 
 info "Starting Anisette Docker container..."
-docker run -d --restart always --name anisette-v3 -p 6969:6969 --volume anisette-v3_data:/home/Alcoholic/.config/anisette-v3/lib/ dadoum/anisette-v3-server
+sudo docker run -d --restart always --name anisette-v3 -p 6969:6969 --volume anisette-v3_data:/home/Alcoholic/.config/anisette-v3/lib/ dadoum/anisette-v3-server
 
 # Final verification
 info "Performing final system verification..."
